@@ -56,57 +56,102 @@ we can use to create a client and server:
 ```java
 @Component
 @Slf4j
-public class HelloWorldCallbackClient {
+public class HelloWorldClient {
 
-  private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-  private HelloWorldStreamingServiceGrpc.HelloWorldServiceFutureStub helloWorldServiceFutureStub;
+    private HelloWorldStreamingServiceGrpc.HelloWorldStreamingServiceStub helloWorldServiceStub;
 
-  @PostConstruct
-  private void init() {
-    var managedChannel = ManagedChannelBuilder.forAddress("localhost", 6565).usePlaintext().build();
-    helloWorldServiceFutureStub = HelloWorldStreamingServiceGrpc.newFutureStub(managedChannel);
-  }
+    private int count;
+    private StreamObserver<Person> result;
+    private ManagedChannel managedChannel;
 
-  public void sayHello(String firstName, String lastName) throws ExecutionException, InterruptedException {
-    var person = Person.newBuilder().setFirstName(firstName).setLastName(lastName).build();
-    log.info("client sending {}", person);
-    ListenableFuture<Greeting> future = helloWorldServiceFutureStub.sayHello(person);
-    addCallback(future, getCallback(), directExecutor());
-    withTimeout(future, 1, TimeUnit.SECONDS, scheduler);
-  }
+    private StreamObserver<Ok> okStreamObserver = new StreamObserver<>() {
+        @Override
+        public void onNext(Ok ok) {
+            log.info("Got response {}", ok);
+        }
 
-  private FutureCallback<Greeting> getCallback() {
-    return new FutureCallback<>() {
-      public void onSuccess(Greeting greeting) {
-        log.info("Got a response: {}", greeting.getMessage());
-      }
-      public void onFailure(@Nullable Throwable t) {
-        log.error(requireNonNull(t).getMessage());
-      }
+        @Override
+        public void onError(Throwable throwable) {
+            // Do nothing
+        }
+
+        @Override
+        public void onCompleted() {
+            // Do nothing
+        }
     };
-  }
+
+
+    @PostConstruct
+    private void init() {
+        createConnection();
+    }
+
+    private void createConnection() {
+        managedChannel = ManagedChannelBuilder.forAddress("localhost", 6565).usePlaintext().build();
+        helloWorldServiceStub = HelloWorldStreamingServiceGrpc.newStub(managedChannel);
+        result = null;
+    }
+
+    public void sayHello(String firstName, String lastName) throws InterruptedException {
+        // Setup the response for handling the connection to the server
+        result = (result != null) ? result : helloWorldServiceStub.sayHello(okStreamObserver);
+
+        // Send a batch of data as a continuous stream
+        range(0, 10).forEach(i -> {
+            log.info(format("\"Sending %d", i));
+            result.onNext(Person.newBuilder().setFirstName(firstName).setLastName(format("%s:%d", lastName, i)).build());
+        });
+        
+        // Arbitrary sleep
+        sleep(1000);
+        log.info("Finished sending");
+        count++;
+
+        // Close and recreate the connection on every 3rd "batch"
+        if(count % 3 == 0) {
+            log.info("Closing channel");
+            managedChannel.shutdownNow();
+            createConnection();
+        }
+    }
 }
 ```
 
 ```java
 @GRpcService
 @Slf4j
-public class HelloWorldServiceImpl extends HelloWorldStreamingServiceGrpc.HelloWorldServiceImplBase {
+public class HelloWorldServiceImpl extends HelloWorldStreamingServiceGrpc.HelloWorldStreamingServiceImplBase {
+    @Override
+    public StreamObserver<Person> sayHello(StreamObserver<Ok> responseObserver) {
+        // Send the acknowledgement response
+        responseObserver.onNext(Ok.newBuilder().build());
 
-  @Override
-  public void sayHello(Person request, StreamObserver<Greeting> responseObserver) {
-    log.info("server received {}", request);
-    // Do heavy processing...
-    try { sleep((long) (Math.random() * 1500)); } catch (InterruptedException e) { e.printStackTrace(); }
+        // Return the handler for processing the received Persons
+        return new StreamObserver<>() {
+            @Override
+            public void onNext(Person person) {
+                log.info("Got person {}", person);
+            }
 
-    var message  = format("Hello %s %s!", request.getFirstName(),request.getLastName());
-    var greeting = Greeting.newBuilder().setMessage(message).build();
-    responseObserver.onNext(greeting);
-    responseObserver.onCompleted();
-  }
+            @Override
+            public void onError(Throwable throwable) {
+                // Do nothing
+            }
 
+            @Override
+            public void onCompleted() {
+                // Do nothing
+            }
+        };
+    }
 }
 ```
 
-There is a lot of flexibility in the way gRpc can communicate with other services,
-this hopefully provides a (very) brief introduction on how you can achieve this!
+The first bean is the streaming client that sends over a stream of `Person` objects and initialises the objects used
+for handling the response. The second bean is the server (`@GRpcService`) that sends an acknowledgement message then
+returns a handler for processing the received `Person` objects. As we are re-using objects here, we will only get a response
+for the first message(s), afterwards we will continue to invoke the call-back function directly.
+
+The client shows how we can terminate the connection and re-establish if required. This can also be done via the server
+side through the `GRpcServerBuilderConfigurer`.

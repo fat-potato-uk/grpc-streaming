@@ -153,5 +153,5 @@ for handling the response. The second bean is the server (`@GRpcService`) that s
 returns a handler for processing the received `Person` objects. As we are re-using objects here, we will only get a response
 for the first message(s), afterwards we will continue to invoke the call-back function directly.
 
-The client shows how we can terminate the connection and re-establish if required. This can also be done via the server
+The client shows how we can manually terminate the connection and re-establish if required. This can also be done via the server
 side through the `GRpcServerBuilderConfigurer`.

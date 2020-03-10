@@ -1,4 +1,4 @@
-### Polymorphic Json and Freemarker
+### Streaming gRPC
 
 In this example we are going to create a streaming gRPC connection. For this, we must include the following
 in our `pom.xml`:
